@@ -2,6 +2,9 @@
 
 > TypeScript client for LinkedIn's unofficial API.
 
+> [!NOTE]
+> This is a fork of [transitive-bullshit/linkedin-api](https://github.com/transitive-bullshit/linkedin-api) that adds support for [authenticating with cookies](#authenticating-with-cookies) from an existing LinkedIn browser session, instead of requiring an email and password.
+
 <p>
   <a href="https://github.com/transitive-bullshit/linkedin-api/actions/workflows/main.yml"><img alt="Build Status" src="https://github.com/transitive-bullshit/linkedin-api/actions/workflows/main.yml/badge.svg" /></a>
   <a href="https://www.npmjs.com/package/linkedin-api-fetch"><img alt="NPM" src="https://img.shields.io/npm/v/linkedin-api-fetch.svg" /></a>
@@ -13,6 +16,7 @@
 - [Install](#install)
 - [Usage](#usage)
   - [Authentication](#authentication)
+  - [Authenticating with Cookies](#authenticating-with-cookies)
   - [Rate Limiting](#rate-limiting)
   - [Proxies](#proxies)
 - [Troubleshooting](#troubleshooting)
@@ -26,7 +30,7 @@
 
 This package provides a HTTP API client for accessing LinkedIn's readonly Voyager APIs. These are the same APIs that the official LinkedIn webapp uses to fetch data about user profiles, companies, and jobs.
 
-No official API access is required. All you need is a valid LinkedIn user account (email and password).
+No official API access is required. All you need is a valid LinkedIn user account (email and password, or the cookies from an existing browser session).
 
 > [!IMPORTANT]
 > This library is not officially supported by LinkedIn. Using this library might violate LinkedIn's Terms of Service. Use it at your own risk.
@@ -69,6 +73,25 @@ If you want to force re-authentication and ignore the existing cookies, use `Lin
 
 > [!IMPORTANT]
 > I recommend not using your personal LinkedIn account credentials with any LinkedIn scraping library unless you don't care about the possibility of being banned. Create a throwaway account for testing purposes.
+
+### Authenticating with Cookies
+
+Instead of an email and password, you can authenticate with the cookies from an existing LinkedIn browser session. This avoids hitting LinkedIn's login endpoint entirely, which makes `CHALLENGE` errors much less likely.
+
+```ts
+import { LinkedInClient } from 'linkedin-api-fetch'
+
+const linkedin = new LinkedInClient({
+  // defaults to LINKEDIN_COOKIES
+  cookies: 'li_at=AQEDA...; JSESSIONID="ajax:1234567890"'
+})
+
+const user = await linkedin.getProfile('fisch2')
+```
+
+To get your cookie string: log in to [linkedin.com](https://www.linkedin.com) in your browser, open the developer tools, go to the Network tab, select any request to `linkedin.com`, and copy the value of the `cookie` request header. The string must contain at least the `li_at` and `JSESSIONID` cookies.
+
+When authenticating with cookies, the client is authenticated immediately and never calls the login endpoint. If the cookies expire (LinkedIn returns a `401`/`403`), you'll need to provide fresh cookies — unless you also pass an `email` and `password`, in which case the client will fall back to re-authenticating with them.
 
 ### Rate Limiting
 

@@ -1,5 +1,10 @@
 import type Conf from 'conf'
-import { parseSetCookie, type SetCookie, splitSetCookieString } from 'cookie-es'
+import {
+  parse as parseCookieString,
+  parseSetCookie,
+  type SetCookie,
+  splitSetCookieString
+} from 'cookie-es'
 import { rangeDelay } from 'delay'
 import defaultKy, { type KyInstance } from 'ky'
 import pThrottle from 'p-throttle'
@@ -55,8 +60,8 @@ export class LinkedInClient {
   // very conservative max requests count to avoid rate-limit
   static readonly MAX_REPEATED_REQUESTS = 200
 
-  public readonly email: string
-  public readonly password: string
+  public readonly email?: string
+  public readonly password?: string
   public readonly config: Conf
 
   protected authKy: KyInstance
@@ -72,6 +77,7 @@ export class LinkedInClient {
   constructor({
     email = getEnv('LINKEDIN_EMAIL'),
     password = getEnv('LINKEDIN_PASSWORD'),
+    cookies = getEnv('LINKEDIN_COOKIES'),
     baseUrl = 'https://www.linkedin.com',
     ky = defaultKy,
     throttle = true,
@@ -81,6 +87,14 @@ export class LinkedInClient {
   }: {
     email?: string
     password?: string
+    /**
+     * Raw cookie string from an authenticated LinkedIn browser session, e.g.
+     * `li_at=...; JSESSIONID="ajax:..."`. Must contain at least the `li_at`
+     * and `JSESSIONID` cookies. When provided, `email` and `password` are
+     * optional and the client is authenticated immediately without hitting
+     * LinkedIn's login endpoint.
+     */
+    cookies?: string
     baseUrl?: string
     ky?: KyInstance
     throttle?: boolean
@@ -89,17 +103,13 @@ export class LinkedInClient {
     authHeaders?: Record<string, string>
   } = {}) {
     assert(
-      email,
-      'LinkedInClient missing required "email" (defaults to "LINKEDIN_EMAIL")'
-    )
-    assert(
-      password,
-      'LinkedInClient missing required "password" (defaults to "LINKEDIN_PASSWORD")'
+      cookies || (email && password),
+      'LinkedInClient missing required "email" and "password" (defaults to "LINKEDIN_EMAIL" and "LINKEDIN_PASSWORD"); alternatively, provide "cookies" from an existing session (defaults to "LINKEDIN_COOKIES")'
     )
 
     this.email = email
     this.password = password
-    this.config = getConfigForUser(email)
+    this.config = getConfigForUser(email ?? 'cookie-session')
     this.debug = !!debug
 
     this.authKy = ky.extend({
@@ -209,10 +219,49 @@ export class LinkedInClient {
         ]
       }
     })
+
+    if (cookies) {
+      this._setRawCookies(cookies)
+    }
   }
 
   get isAuthenticated() {
     return this._isAuthenticated
+  }
+
+  /**
+   * Authenticates using a raw cookie string from an existing LinkedIn browser
+   * session instead of an email and password.
+   *
+   * @param cookieString Raw `cookie` header value, e.g. `li_at=...; JSESSIONID="ajax:..."`.
+   */
+  protected _setRawCookies(cookieString: string) {
+    const parsedCookies = parseCookieString(cookieString)
+
+    const sessionId = parsedCookies.JSESSIONID
+    assert(sessionId, 'LinkedInClient cookies missing JSESSIONID cookie')
+    assert(parsedCookies.li_at, 'LinkedInClient cookies missing li_at cookie')
+
+    this._cookies = Object.fromEntries(
+      Object.entries(parsedCookies).map(([name, value]) => [
+        name,
+        { name, value } as SetCookie
+      ])
+    )
+
+    this._sessionId = sessionId
+    const csrfToken = sessionId.replaceAll('"', '')
+
+    // Use the raw cookie string verbatim so cookie values (e.g. the quoted
+    // JSESSIONID) are sent exactly as the browser sent them.
+    const headers = {
+      'csrf-token': csrfToken,
+      cookie: cookieString
+    }
+
+    this.authKy = this.authKy.extend({ headers })
+    this.apiKy = this.apiKy.extend({ headers })
+    this._isAuthenticated = true
   }
 
   async ensureAuthenticated() {
@@ -293,6 +342,11 @@ export class LinkedInClient {
   }
 
   async authenticate() {
+    assert(
+      this.email && this.password,
+      'LinkedInClient.authenticate requires an "email" and "password"; when using cookie-based auth, provide fresh "cookies" instead'
+    )
+
     this._isAuthenticating = true
 
     try {
@@ -301,8 +355,8 @@ export class LinkedInClient {
 
       const res = await this.authKy.post('uas/authenticate', {
         body: new URLSearchParams({
-          session_key: this.email,
-          session_password: this.password,
+          session_key: this.email!,
+          session_password: this.password!,
           JSESSIONID: this._sessionId!
         }),
         headers: {
@@ -338,7 +392,7 @@ export class LinkedInClient {
       // TODO: handle challenge_url
 
       const setCookies = res.headers.get('set-cookie')!
-      this._setAuthCookies(setCookies)
+      await this._setAuthCookies(setCookies)
       this.config.set('cookies', setCookies)
       this._isAuthenticated = true
     } finally {
